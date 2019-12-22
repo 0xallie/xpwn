@@ -66,7 +66,7 @@ ENDIF(NOT APPLE)
 
 IF(APPLE)
 	ADD_CUSTOM_TARGET(libXPwn.a
-		COMMAND powerpc-apple-darwin8-libtool -static -o libXPwn.a
+		COMMAND libtool -static -o libXPwn.a
 			${PROJECT_BINARY_DIR}/ipsw-patch/libxpwn.a ${PROJECT_BINARY_DIR}/minizip/libminizip.a
 			${PROJECT_BINARY_DIR}/common/libcommon.a ${PROJECT_BINARY_DIR}/hfs/libhfs.a 
 			${PROJECT_BINARY_DIR}/dmg/libdmg.a ${PNG_LIBRARIES} ${BZIP2_LIBRARIES}
