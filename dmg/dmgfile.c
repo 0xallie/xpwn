@@ -6,16 +6,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include <zlib.h>
+#include <bzlib.h>
 
 #include <dmg/dmg.h>
+#include <dmg/adc.h>
 #include <dmg/dmgfile.h>
 
 static void cacheRun(DMG* dmg, BLKXTable* blkx, int run) {
 	size_t bufferSize;
 	z_stream strm;
+	bz_stream bzstrm;
 	void* inBuffer;
 	int ret;
 	size_t have;
+        int bufferRead;
 	
 	if(dmg->runData) {
 		free(dmg->runData);
@@ -24,11 +28,20 @@ static void cacheRun(DMG* dmg, BLKXTable* blkx, int run) {
 	bufferSize = SECTOR_SIZE * blkx->runs[run].sectorCount;
 	
 	dmg->runData = (void*) malloc(bufferSize);
+	inBuffer = (void*) malloc(bufferSize);
 	memset(dmg->runData, 0, bufferSize);
 	
 	ASSERT(dmg->dmg->seek(dmg->dmg, blkx->dataStart + blkx->runs[run].compOffset) == 0, "fseeko");
 	
     switch(blkx->runs[run].type) {
+        case BLOCK_ADC:
+            bufferRead = 0;
+            do {
+                strm.avail_in = dmg->dmg->read(dmg->dmg, inBuffer, blkx->runs[run].compLength);
+                strm.avail_out = adc_decompress(strm.avail_in, inBuffer, bufferSize, dmg->runData, &have);
+                bufferRead+=strm.avail_out;
+            } while (bufferRead < blkx->runs[run].compLength);
+            break;
 		case BLOCK_ZLIB:
 			strm.zalloc = Z_NULL;
 			strm.zfree = Z_NULL;
@@ -36,7 +49,6 @@ static void cacheRun(DMG* dmg, BLKXTable* blkx, int run) {
 			strm.avail_in = 0;
 			strm.next_in = Z_NULL;
 			
-			inBuffer = (void*) malloc(bufferSize);
 			ASSERT(inflateInit(&strm) == Z_OK, "inflateInit");
 			
 			ASSERT((strm.avail_in = dmg->dmg->read(dmg->dmg, inBuffer, blkx->runs[run].compLength)) == blkx->runs[run].compLength, "fread");
@@ -53,7 +65,6 @@ static void cacheRun(DMG* dmg, BLKXTable* blkx, int run) {
 			} while (strm.avail_out == 0);
 			
 			ASSERT(inflateEnd(&strm) == Z_OK, "inflateEnd");
-			free(inBuffer);
 			break;
 		case BLOCK_RAW:
 			ASSERT((have = dmg->dmg->read(dmg->dmg, dmg->runData, blkx->runs[run].compLength)) == blkx->runs[run].compLength, "fread");
@@ -64,10 +75,33 @@ static void cacheRun(DMG* dmg, BLKXTable* blkx, int run) {
 			break;
 		case BLOCK_TERMINATOR:
 			break;
+        case BLOCK_ZEROES:
+            break;
+		case BLOCK_BZIP2:
+			bzstrm.bzalloc = Z_NULL;
+			bzstrm.bzfree = Z_NULL;
+			bzstrm.opaque = Z_NULL;
+			bzstrm.avail_in = 0;
+			bzstrm.next_in = Z_NULL;
+			ASSERT(BZ2_bzDecompressInit(&bzstrm, 0, 0) == BZ_OK, "BZ2_bzDecompressInit");
+			ASSERT((bzstrm.avail_in = dmg->dmg->read(dmg->dmg, inBuffer, blkx->runs[run].compLength)) == blkx->runs[run].compLength, "fread");
+			bzstrm.next_in = (char*)inBuffer;
+			do {
+				bzstrm.avail_out = bufferSize;
+				bzstrm.next_out = (char*) dmg->runData;
+				ASSERT((ret = BZ2_bzDecompress(&bzstrm)) >= 0, "BZ2_bzDecompress");
+				have = bufferSize - bzstrm.avail_out;
+			} while (strm.avail_out == 0);
+			ASSERT(BZ2_bzDecompressEnd(&bzstrm) == BZ_OK, "BZ2_bzDecompressEnd");
+			break;
 		default:
+            fprintf(stderr, "error: unsupported block type %08x", blkx->runs[run].type);
+            exit(1);
 			break;
     }
+	free(inBuffer);
 	
+    dmg->runType = blkx->runs[run].type;
 	dmg->runStart = (blkx->runs[run].sectorStart + blkx->firstSectorNumber) * SECTOR_SIZE;
 	dmg->runEnd = dmg->runStart + (blkx->runs[run].sectorCount * SECTOR_SIZE);
 }
@@ -103,7 +137,7 @@ static int dmgFileRead(io_func* io, off_t location, size_t size, void *buffer) {
 		return TRUE;
 	}
 
-	if(location < dmg->runStart || location >= dmg->runEnd) {
+	if(dmg->runType == BLOCK_TERMINATOR || location < dmg->runStart || location >= dmg->runEnd) {
 		cacheOffset(dmg, location);
 	}
 	
@@ -127,6 +161,7 @@ static int dmgFileRead(io_func* io, off_t location, size_t size, void *buffer) {
 
 static int dmgFileWrite(io_func* io, off_t location, size_t size, void *buffer) {
 	fprintf(stderr, "Error: writing to DMGs is not supported (impossible to achieve with compressed images and retain asr multicast ordering).\n");
+    // hamstergene: is it really that hard? Doesn't seem so to me.
 	return FALSE;
 }
 
@@ -142,73 +177,37 @@ static void closeDmgFile(io_func* io) {
 	
 	free(dmg->blkx);
 	releaseResources(dmg->resources);
+    free(dmg->resourceXML);
 	dmg->dmg->close(dmg->dmg);
 	free(dmg);
 	free(io);
 }
 
-static int dmgFileReadPlain(io_func* io, off_t location, size_t size, void *buffer) {
-	DMG* dmg;
-	AbstractFile *file;
-
-	dmg = (DMG*) io->data;
-
-	if(size == 0) {
-		return TRUE;
-	}
-
-	file = dmg->dmg;
-
-	if (file->seek(file, location + dmg->offset)) {
-		return FALSE;
-	}
-
-	return (file->read(file, buffer, size) == size);
-}
-
-static int dmgFileWritePlain(io_func* io, off_t location, size_t size, void *buffer) {
-	fprintf(stderr, "Error: writing to DMGs is not supported.\n");
-	return FALSE;
-}
-
 io_func* openDmgFile(AbstractFile* abstractIn) {
 	off_t fileLength;
-	UDIFResourceFile resourceFile;
 	DMG* dmg;	
 	ResourceData* blkx;
 	ResourceData* curData;
-	int i;
 	
 	io_func* toReturn;
 
 	if(abstractIn == NULL) {
 		return NULL;
 	}
-	
+
+    dmg = (DMG*) malloc(sizeof(DMG));
+	dmg->dmg = abstractIn;
+
 	fileLength = abstractIn->getLength(abstractIn);
 	abstractIn->seek(abstractIn, fileLength - sizeof(UDIFResourceFile));
-	if (readUDIFResourceFile(abstractIn, &resourceFile, FALSE) != 0) {
-		// uncompressed dmg
-		dmg = (DMG*) malloc(sizeof(DMG));
-		dmg->dmg = abstractIn;
-		dmg->resources = NULL;
-		dmg->numBLKX = 0;
-		dmg->blkx = NULL;
-		dmg->runData = NULL;
-		dmg->runStart = 0;
-		dmg->runEnd = 0;
-		dmg->offset = 0;
-		toReturn = (io_func*) malloc(sizeof(io_func));
-		toReturn->data = dmg;
-		toReturn->read = &dmgFileReadPlain;
-		toReturn->write = &dmgFileWritePlain;
-		toReturn->close = &closeDmgFile; // yes, it is safe
-		return toReturn;
-	}
+	readUDIFResourceFile(abstractIn, &dmg->resourceFile);
 	
-	dmg = (DMG*) malloc(sizeof(DMG));
-	dmg->dmg = abstractIn;
-	dmg->resources = readResources(abstractIn, &resourceFile);
+    dmg->resourceXML = malloc(dmg->resourceFile.fUDIFXMLLength + 1);
+    ASSERT( abstractIn->seek(abstractIn, (off_t)(dmg->resourceFile.fUDIFXMLOffset)) == 0, "fseeko" );
+    ASSERT( abstractIn->read(abstractIn, dmg->resourceXML, (size_t)dmg->resourceFile.fUDIFXMLLength) == (size_t)dmg->resourceFile.fUDIFXMLLength, "fread" );
+    dmg->resourceXML[dmg->resourceFile.fUDIFXMLLength] = 0;
+    
+	dmg->resources = readResources(dmg->resourceXML, dmg->resourceFile.fUDIFXMLLength);
 	dmg->numBLKX = 0;
 	
 	blkx = (getResourceByKey(dmg->resources, "blkx"))->data;
@@ -221,7 +220,7 @@ io_func* openDmgFile(AbstractFile* abstractIn) {
 	
 	dmg->blkx = (BLKXTable**) malloc(sizeof(BLKXTable*) * dmg->numBLKX);
 	
-	i = 0;
+	int i = 0;
 	while(blkx != NULL) {
 		dmg->blkx[i] = (BLKXTable*)(blkx->data);
 		i++;
@@ -229,10 +228,9 @@ io_func* openDmgFile(AbstractFile* abstractIn) {
 	}
 
 	dmg->offset = 0;
-	
+	dmg->runType = BLOCK_TERMINATOR; // causes cacheOffset on first read attempt
 	dmg->runData = NULL;
-	cacheOffset(dmg, 0);
-	
+
 	toReturn = (io_func*) malloc(sizeof(io_func));
 	
 	toReturn->data = dmg;
@@ -244,7 +242,16 @@ io_func* openDmgFile(AbstractFile* abstractIn) {
 }
 
 io_func* openDmgFilePartition(AbstractFile* abstractIn, int partition) {
-	io_func* toReturn;
+	io_func* toReturn = openDmgFile(abstractIn);
+    
+	if(toReturn == NULL) {
+		return NULL;
+	}
+    
+    return seekDmgPartition(toReturn, partition);
+}
+
+io_func* seekDmgPartition(io_func* toReturn, int partition) {
 	Partition* partitions;
 	uint8_t ddmBuffer[SECTOR_SIZE];
 	DriverDescriptorRecord* ddm;
@@ -252,25 +259,9 @@ io_func* openDmgFilePartition(AbstractFile* abstractIn, int partition) {
 	int i;
 	unsigned int BlockSize;
 
-	toReturn = openDmgFile(abstractIn);
-
-	if(toReturn == NULL) {
-		return NULL;
-	}
-
 	toReturn->read(toReturn, 0, SECTOR_SIZE, ddmBuffer);
 	ddm = (DriverDescriptorRecord*) ddmBuffer;
 	flipDriverDescriptorRecord(ddm, FALSE);
-	if (ddm->sbSig != DRIVER_DESCRIPTOR_SIGNATURE) {
-		// no pmap
-		if (((DMG*)toReturn->data)->blkx == NULL) {
-			// no compression
-			free(toReturn->data);
-			free(toReturn);
-			toReturn = IOFuncFromAbstractFile(abstractIn);
-		}
-		return toReturn;
-	}
 	BlockSize = ddm->sbBlkSize;
 
 	partitions = (Partition*) malloc(BlockSize);
@@ -284,14 +275,16 @@ io_func* openDmgFilePartition(AbstractFile* abstractIn, int partition) {
 	if(partition >= 0) {
 		((DMG*)toReturn->data)->offset = partitions[partition].pmPyPartStart * BlockSize;
 	} else {
+		Partition* nextPartition = partitions;
 		for(i = 0; i < numPartitions; i++) {
-			if(strcmp((char*)partitions->pmParType, "Apple_HFSX") == 0 || strcmp((char*)partitions->pmParType, "Apple_HFS") == 0) {
-				((DMG*)toReturn->data)->offset = partitions->pmPyPartStart * BlockSize;
+			if(strcmp((char*)nextPartition->pmParType, "Apple_HFSX") == 0 || strcmp((char*)nextPartition->pmParType, "Apple_HFS") == 0) {
+				((DMG*)toReturn->data)->offset = nextPartition->pmPyPartStart * BlockSize;
 				break;
 			}
-			partitions = (Partition*)((uint8_t*)partitions + BlockSize);
+			nextPartition = (Partition*)((uint8_t*)nextPartition + BlockSize);
 		}
 	}
+	free(partitions);
 
 	return toReturn;
 }

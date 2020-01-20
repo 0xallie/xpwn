@@ -5,30 +5,31 @@
 #include <dmg/dmg.h>
 
 void flipUDIFChecksum(UDIFChecksum* o, char out) {
-  int i;
-
-  FLIPENDIAN(o->type);
-  
-  if(out) {
-    for(i = 0; i < o->size; i++) {
-      FLIPENDIAN(o->data[i]);
+    
+    if (out) {
+        if (o->bitness == 32) // crc32 checksums are integers
+        {
+            FLIPENDIAN(o->data[0]);
+        }
+        FLIPENDIAN(o->bitness);
+        FLIPENDIAN(o->type);
+    } else {
+        FLIPENDIAN(o->type);
+        FLIPENDIAN(o->bitness);
+        if (o->bitness == 32) // crc32 checksums are integers
+        {
+            FLIPENDIAN(o->data[0]);
+        }
     }
-    FLIPENDIAN(o->size);
-  } else {
-    FLIPENDIAN(o->size);
-    for(i = 0; i < o->size; i++) {
-      FLIPENDIAN(o->data[i]);
-    }
-  }
 }
 
 void readUDIFChecksum(AbstractFile* file, UDIFChecksum* o) {
   int i;
   
   o->type = readUInt32(file);
-  o->size = readUInt32(file);
+  o->bitness = readUInt32(file);
   
-  for(i = 0; i < 0x20; i++) {
+  for(i = 0; i < 32; i++) {
     o->data[i] = readUInt32(file);
   }
 }
@@ -37,9 +38,9 @@ void writeUDIFChecksum(AbstractFile* file, UDIFChecksum* o) {
   int i;
   
   writeUInt32(file, o->type);
-  writeUInt32(file, o->size);  
+  writeUInt32(file, o->bitness);  
   
-  for(i = 0; i < o->size; i++) {
+  for(i = 0; i < 32; i++) {
     writeUInt32(file, o->data[i]);
   }
 }
@@ -58,10 +59,9 @@ void writeUDIFID(AbstractFile* file, UDIFID* o) {
   FLIPENDIAN(o->data1); writeUInt32(file, o->data1); FLIPENDIAN(o->data1);
 }
 
-int readUDIFResourceFile(AbstractFile* file, UDIFResourceFile* o, int die) {
+void readUDIFResourceFile(AbstractFile* file, UDIFResourceFile* o) {
   o->fUDIFSignature = readUInt32(file);
   
-  if (!die && o->fUDIFSignature != 0x6B6F6C79) return -1;
   ASSERT(o->fUDIFSignature == 0x6B6F6C79, "readUDIFResourceFile - signature incorrect");
   
   o->fUDIFVersion = readUInt32(file);
@@ -93,7 +93,6 @@ int readUDIFResourceFile(AbstractFile* file, UDIFResourceFile* o, int die) {
   o->reserved2 = readUInt32(file);
   o->reserved3 = readUInt32(file);
   o->reserved4 = readUInt32(file);
-  return 0;
 }
 
 void writeUDIFResourceFile(AbstractFile* file, UDIFResourceFile* o) {

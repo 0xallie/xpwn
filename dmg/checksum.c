@@ -4,6 +4,15 @@
 
 #include <dmg/dmg.h>
 
+uint32_t checksumBitness(uint32_t type)
+{
+    if (type == CHECKSUM_NONE) return 0;
+    if (type == CHECKSUM_UDIF_CRC32) return 32;
+    if (type == CHECKSUM_MD5) return 128;
+    ASSERT(0, "unknown checksum type");
+    return 0;
+}
+
 void BlockSHA1CRC(void* token, const unsigned char* data, size_t len) {
   ChecksumToken* ckSumToken;
   ckSumToken = (ChecksumToken*) token;
@@ -24,6 +33,13 @@ void CRCProxy(void* token, const unsigned char* data, size_t len) {
   ChecksumToken* ckSumToken;
   ckSumToken = (ChecksumToken*) token;
   CRC32Checksum(&(ckSumToken->crc), data, len);
+}
+
+void CRCZeroesProxy(void* token, size_t len) 
+{
+    ChecksumToken* ckSumToken;
+    ckSumToken = (ChecksumToken*) token;
+    CRC32ZeroesChecksum(&(ckSumToken->crc), len);
 }
 
 /*
@@ -121,10 +137,10 @@ static uint64_t crc_table[256] = {
 };
 
 /* ========================================================================= */
-#define DO1(buf) crc = crc_table[((int)crc ^ (*buf++)) & 0xff] ^ (crc >> 8);
-#define DO2(buf)  DO1(buf); DO1(buf);
-#define DO4(buf)  DO2(buf); DO2(buf);
-#define DO8(buf)  DO4(buf); DO4(buf);
+#define DO1(expr) crc = crc_table[((int)crc ^ (expr)) & 0xff] ^ (crc >> 8);
+#define DO2(expr)  DO1(expr); DO1(expr);
+#define DO4(expr)  DO2(expr); DO2(expr);
+#define DO8(expr)  DO4(expr); DO4(expr);
 
 /* ========================================================================= */
 uint32_t CRC32Checksum(uint32_t* ckSum, const unsigned char *buf, size_t len)
@@ -138,13 +154,13 @@ uint32_t CRC32Checksum(uint32_t* ckSum, const unsigned char *buf, size_t len)
   crc = crc ^ 0xffffffffL;
   while (len >= 8)
   {
-    DO8(buf);
+    DO8(*buf++); // intentionally incrementing multiple times
     len -= 8;
   }
   if (len)
   {
     do {
-DO1(buf);
+DO1(*buf++);
     } while (--len);
   }
   
@@ -154,6 +170,30 @@ DO1(buf);
   return crc;
 }
 
+uint32_t CRC32ZeroesChecksum(uint32_t* ckSum, size_t len)
+{
+    uint32_t crc;
+    
+    crc = *ckSum;
+    
+    crc = crc ^ 0xffffffffL;
+    while (len >= 8)
+    {
+        DO8(0);
+        len -= 8;
+    }
+    if (len)
+    {
+        do {
+            DO1(0);
+        } while (--len);
+    }
+    
+    crc = crc ^ 0xffffffffL;
+    
+    *ckSum = crc;
+    return crc;
+}
 /*
 SHA-1 in C
 By Steve Reid <steve@edmweb.com>
@@ -168,17 +208,16 @@ A million repetitions of "a"
   34AA973C D4C4DAA4 F61EEB2B DBAD2731 6534016F
 */
 
-#define SHA1HANDSOFF
-
-void SHA1Transform(uint32_t state[5], const uint8_t buffer[64]);
+#define SHA1HANDSOFF * Copies data before messing with it.
 
 #define rol(value, bits) (((value) << (bits)) | ((value) >> (32 - (bits))))
 
 /* blk0() and blk() perform the initial expand. */
 /* I got the idea of expanding during the round function from SSLeay */
-/* FIXME: can we do this in an endian-proof way? */
+
 #define blk0(i) ((endianness == IS_LITTLE_ENDIAN) ? (block->l[i] = (rol(block->l[i],24)&0xFF00FF00) \
-			    |(rol(block->l[i],8)&0x00FF00FF)) : block->l[i])
+    |(rol(block->l[i],8)&0x00FF00FF)) : block->l[i])
+   
 #define blk(i) (block->l[i&15] = rol(block->l[(i+13)&15]^block->l[(i+8)&15] \
     ^block->l[(i+2)&15]^block->l[i&15],1))
 
@@ -189,31 +228,30 @@ void SHA1Transform(uint32_t state[5], const uint8_t buffer[64]);
 #define R3(v,w,x,y,z,i) z+=(((w|x)&y)|(w&x))+blk(i)+0x8F1BBCDC+rol(v,5);w=rol(w,30);
 #define R4(v,w,x,y,z,i) z+=(w^x^y)+blk(i)+0xCA62C1D6+rol(v,5);w=rol(w,30);
 
-/* Hash a single 512-bit block. This is the core of the algorithm. */
-void SHA1Transform(uint32_t state[5], const uint8_t buffer[64])
-{
-    uint32_t a, b, c, d, e;
-    typedef union {
-        uint8_t c[64];
-        uint32_t l[16];
-    } CHAR64LONG16;
-    CHAR64LONG16* block;
 
+/* Hash a single 512-bit block. This is the core of the algorithm. */
+
+void SHA1Transform(unsigned long state[5], const unsigned char buffer[64])
+{
+unsigned long a, b, c, d, e;
+typedef union {
+    unsigned char c[64];
+    unsigned long l[16];
+} CHAR64LONG16;
+CHAR64LONG16* block;
 #ifdef SHA1HANDSOFF
-    static uint8_t workspace[64];
+static unsigned char workspace[64];
     block = (CHAR64LONG16*)workspace;
     memcpy(block, buffer, 64);
 #else
     block = (CHAR64LONG16*)buffer;
 #endif
-
     /* Copy context->state[] to working vars */
     a = state[0];
     b = state[1];
     c = state[2];
     d = state[3];
     e = state[4];
-
     /* 4 rounds of 20 operations each. Loop unrolled. */
     R0(a,b,c,d,e, 0); R0(e,a,b,c,d, 1); R0(d,e,a,b,c, 2); R0(c,d,e,a,b, 3);
     R0(b,c,d,e,a, 4); R0(a,b,c,d,e, 5); R0(e,a,b,c,d, 6); R0(d,e,a,b,c, 7);
@@ -235,20 +273,19 @@ void SHA1Transform(uint32_t state[5], const uint8_t buffer[64])
     R4(c,d,e,a,b,68); R4(b,c,d,e,a,69); R4(a,b,c,d,e,70); R4(e,a,b,c,d,71);
     R4(d,e,a,b,c,72); R4(c,d,e,a,b,73); R4(b,c,d,e,a,74); R4(a,b,c,d,e,75);
     R4(e,a,b,c,d,76); R4(d,e,a,b,c,77); R4(c,d,e,a,b,78); R4(b,c,d,e,a,79);
-
     /* Add the working vars back into context.state[] */
     state[0] += a;
     state[1] += b;
     state[2] += c;
     state[3] += d;
     state[4] += e;
-
     /* Wipe variables */
     a = b = c = d = e = 0;
 }
 
 
 /* SHA1Init - Initialize new context */
+
 void SHA1Init(SHA1_CTX* context)
 {
     /* SHA1 initialization constants */
@@ -262,9 +299,10 @@ void SHA1Init(SHA1_CTX* context)
 
 
 /* Run your data through this. */
-void SHA1Update(SHA1_CTX* context, const uint8_t* data, const size_t len)
+
+void SHA1Update(SHA1_CTX* context, const unsigned char* data, unsigned int len)
 {
-    size_t i, j;
+unsigned int i, j;
 
     j = (context->count[0] >> 3) & 63;
     if ((context->count[0] += len << 3) < (len << 3)) context->count[1]++;
@@ -273,7 +311,7 @@ void SHA1Update(SHA1_CTX* context, const uint8_t* data, const size_t len)
         memcpy(&context->buffer[j], data, (i = 64-j));
         SHA1Transform(context->state, context->buffer);
         for ( ; i + 63 < len; i += 64) {
-            SHA1Transform(context->state, data + i);
+            SHA1Transform(context->state, &data[i]);
         }
         j = 0;
     }
@@ -283,33 +321,33 @@ void SHA1Update(SHA1_CTX* context, const uint8_t* data, const size_t len)
 
 
 /* Add padding and return the message digest. */
-void SHA1Final(uint8_t digest[SHA1_DIGEST_SIZE], SHA1_CTX* context)
+
+void SHA1Final(unsigned char digest[20], SHA1_CTX* context)
 {
-    uint32_t i;
-    uint8_t  finalcount[8];
+unsigned long i, j;
+unsigned char finalcount[8];
 
     for (i = 0; i < 8; i++) {
         finalcount[i] = (unsigned char)((context->count[(i >= 4 ? 0 : 1)]
          >> ((3-(i & 3)) * 8) ) & 255);  /* Endian independent */
     }
-    SHA1Update(context, (uint8_t *)"\200", 1);
+    SHA1Update(context, (unsigned char *)"\200", 1);
     while ((context->count[0] & 504) != 448) {
-        SHA1Update(context, (uint8_t *)"\0", 1);
+        SHA1Update(context, (unsigned char *)"\0", 1);
     }
     SHA1Update(context, finalcount, 8);  /* Should cause a SHA1Transform() */
-    for (i = 0; i < SHA1_DIGEST_SIZE; i++) {
-        digest[i] = (uint8_t)
+    for (i = 0; i < 20; i++) {
+        digest[i] = (unsigned char)
          ((context->state[i>>2] >> ((3-(i & 3)) * 8) ) & 255);
     }
-    
     /* Wipe variables */
-    i = 0;
+    i = j = 0;
     memset(context->buffer, 0, 64);
     memset(context->state, 0, 20);
     memset(context->count, 0, 8);
-    memset(finalcount, 0, 8);	/* SWR */
-
-#ifdef SHA1HANDSOFF  /* make SHA1Transform overwrite its own static vars */
+    memset(&finalcount, 0, 8);
+#ifdef SHA1HANDSOFF  /* make SHA1Transform overwrite it's own static vars */
     SHA1Transform(context->state, context->buffer);
 #endif
 }
+

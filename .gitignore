@@ -3,3 +3,11 @@
 CMakeFiles
 Makefile
 CMakeCache.txt
+dmg/dmg
+hdutil/hdutil
+hfs/hfsplus
+ipsw-patch/imagetool
+ipsw-patch/ipsw
+ipsw-patch/ticket
+ipsw-patch/validate
+ipsw-patch/xpwntool

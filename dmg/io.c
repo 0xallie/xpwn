@@ -2,29 +2,17 @@
 #include <stdio.h>
 #include <string.h>
 #include <zlib.h>
+#include <bzlib.h>
 
 #include <dmg/dmg.h>
+#include <dmg/adc.h>
 #include <inttypes.h>
 
 #define SECTORS_AT_A_TIME 0x200
-#define USE_IGNORE_BLOCKS 1 // allow creation of BLOCK_IGNORE
-#define RELAX_TOWARDS_END 1 // relax threshold towards the end
-#define USE_BIG_ZERO_RUNS 0 // compress zero-blocks in one go if they are below threshold
-
-// Okay, this value sucks. You shouldn't touch it because it affects how many ignore sections get added to the blkx list
-// If the blkx list gets too fragmented with ignore sections, then the copy list in certain versions of the iPhone's
-// asr becomes too big. Due to Apple's BUGGY CODE, this causes asr to segfault! This is because the copy list becomes
-// too large for the initial buffer allocated, and realloc is called by asr. Unfortunately, after the realloc, the initial
-// pointer is still used by asr for a little while! Frakking noob mistake.
-
-// The only reason why it works at all is their really idiotic algorithm to determine where to put ignore blocks. It's
-// certainly nothing reasonable like "put in an ignore block if you encounter more than X blank sectors" (like mine)
-// There's always a large-ish one at the end, and a tiny 2 sector one at the end too, to take care of the space after
-// the backup volume header. No frakking clue how they go about determining how to do that.
 
 BLKXTable* insertBLKX(AbstractFile* out, AbstractFile* in, uint32_t firstSectorNumber, uint32_t numSectors, uint32_t blocksDescriptor,
 			uint32_t checksumType, ChecksumFunc uncompressedChk, void* uncompressedChkToken, ChecksumFunc compressedChk,
-			void* compressedChkToken, Volume* volume, int addComment) {
+			void* compressedChkToken, Volume* volume) {
 	BLKXTable* blkx;
 	
 	uint32_t roomForRuns;
@@ -37,9 +25,7 @@ BLKXTable* insertBLKX(AbstractFile* out, AbstractFile* in, uint32_t firstSectorN
 	size_t have;
 	int ret;
 	
-	int IGNORE_THRESHOLD = 100000;
-
-	z_stream strm;	
+	bz_stream strm;
 	
 	blkx = (BLKXTable*) malloc(sizeof(BLKXTable) + (2 * sizeof(BLKXRun)));
 	roomForRuns = 2;
@@ -60,7 +46,7 @@ BLKXTable* insertBLKX(AbstractFile* out, AbstractFile* in, uint32_t firstSectorN
 	blkx->reserved6 = 0;
 	memset(&(blkx->checksum), 0, sizeof(blkx->checksum));
 	blkx->checksum.type = checksumType;
-	blkx->checksum.size = 0x20;
+	blkx->checksum.bitness = checksumBitness(checksumType);
 	blkx->blocksRunCount = 0;
 		
 	bufferSize = SECTOR_SIZE * blkx->decompressBufferRequested;
@@ -71,234 +57,28 @@ BLKXTable* insertBLKX(AbstractFile* out, AbstractFile* in, uint32_t firstSectorN
 	curRun = 0;
 	curSector = 0;
 	
-	uint64_t startOff = in->tell(in);
-
-	if(addComment)
-	{
-		blkx->runs[curRun].type = BLOCK_COMMENT;
-		blkx->runs[curRun].reserved = 0x2B626567;
-		blkx->runs[curRun].sectorStart = curSector;
-		blkx->runs[curRun].sectorCount = 0;
-		blkx->runs[curRun].compOffset = out->tell(out) - blkx->dataStart;
-		blkx->runs[curRun].compLength = 0;
-		curRun++;
-
-		if(curRun >= roomForRuns) {
-			roomForRuns <<= 1;
-			blkx = (BLKXTable*) realloc(blkx, sizeof(BLKXTable) + (roomForRuns * sizeof(BLKXRun)));
-		}
-	}
-
 	while(numSectors > 0) {
 		if(curRun >= roomForRuns) {
 			roomForRuns <<= 1;
 			blkx = (BLKXTable*) realloc(blkx, sizeof(BLKXTable) + (roomForRuns * sizeof(BLKXRun)));
 		}
 		
-		blkx->runs[curRun].type = BLOCK_ZLIB;
+		blkx->runs[curRun].type = BLOCK_BZIP2;
 		blkx->runs[curRun].reserved = 0;
 		blkx->runs[curRun].sectorStart = curSector;
 		blkx->runs[curRun].sectorCount = (numSectors > SECTORS_AT_A_TIME) ? SECTORS_AT_A_TIME : numSectors;
 
 		memset(&strm, 0, sizeof(strm));
-		strm.zalloc = Z_NULL;
-		strm.zfree = Z_NULL;
+		strm.bzalloc = Z_NULL;
+		strm.bzfree = Z_NULL;
 		strm.opaque = Z_NULL;
 		
-		int amountRead;
-		if(!USE_IGNORE_BLOCKS)
-		{
-			//in->seek(in, startOff + (blkx->sectorCount - numSectors) * SECTOR_SIZE);
-			ASSERT((amountRead = in->read(in, inBuffer, blkx->runs[curRun].sectorCount * SECTOR_SIZE)) == (blkx->runs[curRun].sectorCount * SECTOR_SIZE), "mRead");
-		}
-		else
-		{
-			size_t sectorsToSkip = 0;
-			size_t processed = 0;
-
-			while(processed < numSectors)
-			{
-				blkx->runs[curRun].sectorCount = ((numSectors - processed) > SECTORS_AT_A_TIME) ? SECTORS_AT_A_TIME : (numSectors - processed);
-
-				//printf("Currently at %" PRId64 "\n", curOff);
-				in->seek(in, startOff + (blkx->sectorCount - numSectors + processed) * SECTOR_SIZE);
-				ASSERT((amountRead = in->read(in, inBuffer, blkx->runs[curRun].sectorCount * SECTOR_SIZE)) == (blkx->runs[curRun].sectorCount * SECTOR_SIZE), "mRead");
-
-				if(!addComment)
-					break;
-
-				processed += amountRead / SECTOR_SIZE;
-
-				size_t* checkBuffer = (size_t*) inBuffer;
-				size_t counter;
-				size_t counter_max = amountRead / sizeof(size_t);
-				for(counter = 0; counter < counter_max; counter++)
-				{
-					if(checkBuffer[counter] != 0) {
-						//printf("Not empty at %" PRId64 " / %" PRId64 "\n", (int64_t)(counter * sizeof(size_t)) + curOff, (int64_t)((counter * sizeof(size_t)) / SECTOR_SIZE + sectorsToSkip + blkx->runs[curRun].sectorStart));
-						break;
-					}
-				}
-
-				size_t skipInBuffer = (counter * sizeof(size_t)) / SECTOR_SIZE;
-				sectorsToSkip += skipInBuffer;
-
-				//printf("sectorsToSkip: %d\n", sectorsToSkip);
-
-				if(counter < counter_max)
-				{
-					if(sectorsToSkip > IGNORE_THRESHOLD)
-					{
-						//printf("Seeking back to %" PRId64 "\n", curOff + (skipInBuffer * SECTOR_SIZE));
-						//in->seek(in, curOff + (skipInBuffer * SECTOR_SIZE));
-					} else {
-						//printf("Breaking out: %d / %d\n", (size_t) counter, (size_t) counter_max);
-					}
-					break;
-				}
-			}
-
-			if(RELAX_TOWARDS_END && sectorsToSkip + 2 >= numSectors) {
-				// the end is near, relax the threshold
-				IGNORE_THRESHOLD = 0;
-			}
-			if(sectorsToSkip > IGNORE_THRESHOLD)
-			{
-				int remainder = sectorsToSkip & 0xf;
-
-				if(sectorsToSkip != remainder)
-				{
-					blkx->runs[curRun].type = BLOCK_IGNORE;
-					blkx->runs[curRun].reserved = 0;
-					blkx->runs[curRun].sectorStart = curSector;
-					blkx->runs[curRun].sectorCount = sectorsToSkip - remainder;
-					blkx->runs[curRun].compOffset = out->tell(out) - blkx->dataStart;
-					blkx->runs[curRun].compLength = 0;
-
-					printf("run %d: skipping sectors=%" PRId64 ", left=%d\n", curRun, (int64_t) sectorsToSkip - remainder, numSectors);
-
-					curSector += blkx->runs[curRun].sectorCount;
-					numSectors -= blkx->runs[curRun].sectorCount;
-
-					curRun++;
-
-					if(curRun >= roomForRuns) {
-						roomForRuns <<= 1;
-						blkx = (BLKXTable*) realloc(blkx, sizeof(BLKXTable) + (roomForRuns * sizeof(BLKXRun)));
-					}
-				}
-
-				if(remainder > 0)
-				{
-					blkx->runs[curRun].type = BLOCK_IGNORE;
-					blkx->runs[curRun].reserved = 0;
-					blkx->runs[curRun].sectorStart = curSector;
-					blkx->runs[curRun].sectorCount = remainder;
-					blkx->runs[curRun].compOffset = out->tell(out) - blkx->dataStart;
-					blkx->runs[curRun].compLength = 0;
-
-					printf("run %d: skipping sectors=%" PRId64 ", left=%d\n", curRun, (int64_t) remainder, numSectors);
-
-					curSector += blkx->runs[curRun].sectorCount;
-					numSectors -= blkx->runs[curRun].sectorCount;
-
-					curRun++;
-
-					if(curRun >= roomForRuns) {
-						roomForRuns <<= 1;
-						blkx = (BLKXTable*) realloc(blkx, sizeof(BLKXTable) + (roomForRuns * sizeof(BLKXRun)));
-					}
-				}
-
-				IGNORE_THRESHOLD = 0;
-				
-				continue;
-			}
-
-			// at this point, we may have sectors to skip, but below threshold
-			if (sectorsToSkip >= SECTORS_AT_A_TIME) {
-#if !USE_BIG_ZERO_RUNS
-				// we have read multiple times, we may need to clear the buffer
-				if (processed > sectorsToSkip) {
-					// the last read was not all-zero, clear it
-					memset(inBuffer, 0, amountRead);
-				}
-				// write one block as compressed zeroes. this is definitely quite dumb,
-				// because if we have multiple zero blocks in a row we will re-read and
-				// re-calculate zeroes then write them individually. but I don't care
-				amountRead = SECTORS_AT_A_TIME * SECTOR_SIZE;
-#else
-				// write down all all-zero blocks before this one. this may
-				// create runs bigger than SECTORS_AT_A_TIME, so be careful
-				// on the bright side, seek-before-read becomes redundant
-				size_t sectorsToWrite = (sectorsToSkip / SECTORS_AT_A_TIME) * SECTORS_AT_A_TIME;
-				size_t bytesToWrite = sectorsToWrite * SECTOR_SIZE;
-				char *zeroBuf = calloc(1, bytesToWrite);
-				char *tempBuf = malloc(bufferSize);
-
-				ASSERT(zeroBuf && tempBuf, "zeroBuf && tempBuf");
-
-				blkx->runs[curRun].sectorCount = sectorsToWrite;
-
-				printf("run %d: sectors=%" PRId64 ", left=%d\n", curRun, blkx->runs[curRun].sectorCount, numSectors);
-
-				ASSERT(deflateInit(&strm, 1) == Z_OK, "deflateInit");
-
-				strm.avail_in = bytesToWrite;
-				strm.next_in = zeroBuf;
-
-				if(uncompressedChk)
-					(*uncompressedChk)(uncompressedChkToken, zeroBuf, bytesToWrite);
-
-				blkx->runs[curRun].compOffset = out->tell(out) - blkx->dataStart;
-
-				strm.avail_out = bufferSize;
-				strm.next_out = tempBuf;
-
-				ASSERT((ret = deflate(&strm, Z_FINISH)) != Z_STREAM_ERROR, "deflate/Z_STREAM_ERROR");
-				if(ret != Z_STREAM_END) {
-					ASSERT(FALSE, "deflate");
-				}
-				have = bufferSize - strm.avail_out;
-
-				ASSERT(out->write(out, tempBuf, have) == have, "fwrite");
-
-				if(compressedChk)
-					(*compressedChk)(compressedChkToken, tempBuf, have);
-
-				blkx->runs[curRun].compLength = have;
-				deflateEnd(&strm);
-
-				curSector += sectorsToWrite;
-				numSectors -= sectorsToWrite;
-				curRun++;
-
-				if (!numSectors) {
-					break;
-				}
-
-				if(curRun >= roomForRuns) {
-					roomForRuns <<= 1;
-					blkx = (BLKXTable*) realloc(blkx, sizeof(BLKXTable) + (roomForRuns * sizeof(BLKXRun)));
-				}
-
-				blkx->runs[curRun].type = BLOCK_ZLIB;
-				blkx->runs[curRun].reserved = 0;
-				blkx->runs[curRun].sectorStart = curSector;
-				blkx->runs[curRun].sectorCount = amountRead / SECTOR_SIZE;
-
-				free(tempBuf);
-				free(zeroBuf);
-#endif
-			}
-		}
-
 		printf("run %d: sectors=%" PRId64 ", left=%d\n", curRun, blkx->runs[curRun].sectorCount, numSectors);
-
-		ASSERT(deflateInit(&strm, 1) == Z_OK, "deflateInit");
 		
-		strm.avail_in = amountRead;
-		strm.next_in = inBuffer;
+		ASSERT(BZ2_bzCompressInit(&strm, 9, 0, 0) == BZ_OK, "BZ2_bzCompressInit");
+		
+		ASSERT((strm.avail_in = in->read(in, inBuffer, blkx->runs[curRun].sectorCount * SECTOR_SIZE)) == (blkx->runs[curRun].sectorCount * SECTOR_SIZE), "mRead");
+		strm.next_in = (char*)inBuffer;
 		
 		if(uncompressedChk)
 			(*uncompressedChk)(uncompressedChkToken, inBuffer, blkx->runs[curRun].sectorCount * SECTOR_SIZE);
@@ -307,15 +87,15 @@ BLKXTable* insertBLKX(AbstractFile* out, AbstractFile* in, uint32_t firstSectorN
 		blkx->runs[curRun].compLength = 0;
 
 		strm.avail_out = bufferSize;
-		strm.next_out = outBuffer;
+		strm.next_out = (char*)outBuffer;
 	
-		ASSERT((ret = deflate(&strm, Z_FINISH)) != Z_STREAM_ERROR, "deflate/Z_STREAM_ERROR");
-		if(ret != Z_STREAM_END) {
-			ASSERT(FALSE, "deflate");
+		ASSERT((ret = BZ2_bzCompress(&strm, BZ_FINISH)) != BZ_SEQUENCE_ERROR, "BZ2_bzCompress/BZ_SEQUENCE_ERROR");
+		if(ret != BZ_STREAM_END) {
+			ASSERT(FALSE, "BZ2_bzCompress");
 		}
 		have = bufferSize - strm.avail_out;
 		
-		if((have / SECTOR_SIZE) >= (blkx->runs[curRun].sectorCount - 15)) {
+		if((have / SECTOR_SIZE) > blkx->runs[curRun].sectorCount) {
 			blkx->runs[curRun].type = BLOCK_RAW;
 			ASSERT(out->write(out, inBuffer, blkx->runs[curRun].sectorCount * SECTOR_SIZE) == (blkx->runs[curRun].sectorCount * SECTOR_SIZE), "fwrite");
 			blkx->runs[curRun].compLength += blkx->runs[curRun].sectorCount * SECTOR_SIZE;
@@ -332,7 +112,7 @@ BLKXTable* insertBLKX(AbstractFile* out, AbstractFile* in, uint32_t firstSectorN
 			blkx->runs[curRun].compLength += have;
 		}
 							
-		deflateEnd(&strm);
+		BZ2_bzCompressEnd(&strm);
 
 		curSector += blkx->runs[curRun].sectorCount;
 		numSectors -= blkx->runs[curRun].sectorCount;
@@ -343,23 +123,7 @@ BLKXTable* insertBLKX(AbstractFile* out, AbstractFile* in, uint32_t firstSectorN
 		roomForRuns <<= 1;
 		blkx = (BLKXTable*) realloc(blkx, sizeof(BLKXTable) + (roomForRuns * sizeof(BLKXRun)));
 	}
-
-	if(addComment)
-	{	
-		blkx->runs[curRun].type = BLOCK_COMMENT;
-		blkx->runs[curRun].reserved = 0x2B656E64;
-		blkx->runs[curRun].sectorStart = curSector;
-		blkx->runs[curRun].sectorCount = 0;
-		blkx->runs[curRun].compOffset = out->tell(out) - blkx->dataStart;
-		blkx->runs[curRun].compLength = 0;
-		curRun++;
-
-		if(curRun >= roomForRuns) {
-			roomForRuns <<= 1;
-			blkx = (BLKXTable*) realloc(blkx, sizeof(BLKXTable) + (roomForRuns * sizeof(BLKXRun)));
-		}
-	}
-
+	
 	blkx->runs[curRun].type = BLOCK_TERMINATOR;
 	blkx->runs[curRun].reserved = 0;
 	blkx->runs[curRun].sectorStart = curSector;
@@ -385,8 +149,10 @@ void extractBLKX(AbstractFile* in, AbstractFile* out, BLKXTable* blkx) {
 	off_t initialOffset;
 	int i;
 	int ret;
+        int bufferRead;
 	
 	z_stream strm;
+	bz_stream bzstrm;
 	
 	bufferSize = SECTOR_SIZE * blkx->decompressBufferRequested;
 	
@@ -419,6 +185,15 @@ void extractBLKX(AbstractFile* in, AbstractFile* out, BLKXTable* blkx) {
 		printf("run %d: start=%" PRId64 " sectors=%" PRId64 ", length=%" PRId64 ", fileOffset=0x%" PRIx64 "\n", i, initialOffset + (blkx->runs[i].sectorStart * SECTOR_SIZE), blkx->runs[i].sectorCount, blkx->runs[i].compLength, blkx->runs[i].compOffset);
 		
 		switch(blkx->runs[i].type) {
+			case BLOCK_ADC:
+				bufferRead = 0;
+				do {
+					ASSERT((strm.avail_in = in->read(in, inBuffer, blkx->runs[i].compLength)) == blkx->runs[i].compLength, "fread");
+					strm.avail_out = adc_decompress(strm.avail_in, inBuffer, bufferSize, outBuffer, &have);
+					ASSERT(out->write(out, outBuffer, have) == have, "mWrite");
+					bufferRead+=strm.avail_out;
+				} while (bufferRead < blkx->runs[i].compLength);
+				break;
 			case BLOCK_ZLIB:
 				strm.zalloc = Z_NULL;
 				strm.zfree = Z_NULL;
@@ -466,6 +241,24 @@ void extractBLKX(AbstractFile* in, AbstractFile* out, BLKXTable* blkx) {
 				}
 				break;
 			case BLOCK_IGNORE:
+				break;
+			case BLOCK_BZIP2:
+				bzstrm.bzalloc = Z_NULL;
+				bzstrm.bzfree = Z_NULL;
+				bzstrm.opaque = Z_NULL;
+				bzstrm.avail_in = 0;
+				bzstrm.next_in = Z_NULL;
+				ASSERT(BZ2_bzDecompressInit(&bzstrm, 0, 0) == BZ_OK, "BZ2_bzDecompressInit");
+				ASSERT((bzstrm.avail_in = in->read(in, inBuffer, blkx->runs[i].compLength)) == blkx->runs[i].compLength, "fread");
+				bzstrm.next_in = (char*)inBuffer;
+				do {
+					bzstrm.avail_out = bufferSize;
+					bzstrm.next_out = (char*)outBuffer;
+					ASSERT((ret = BZ2_bzDecompress(&bzstrm)) >= 0, "BZ2_bzDecompress");
+					have = bufferSize - bzstrm.avail_out;
+					ASSERT(out->write(out, outBuffer, have) == have, "mWrite");
+				} while (bzstrm.avail_out == 0);
+				ASSERT(BZ2_bzDecompressEnd(&bzstrm) == BZ_OK, "BZ2_bzDecompressEnd");
 				break;
 			case BLOCK_COMMENT:
 				break;

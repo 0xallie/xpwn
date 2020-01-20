@@ -612,7 +612,7 @@ int main(int argc, char* argv[]) {
 	closeVolume(rootVolume);
 	CLOSE(rootFS);
 
-	buildDmg(openRoot((void**)&buffer, &rootSize), getFileFromOutputStateForReplace(&outputState, rootFSPathInIPSW), 2048);
+	buildDmg(openRoot((void**)&buffer, &rootSize), getFileFromOutputStateForReplace(&outputState, rootFSPathInIPSW));
 
 	closeRoot(buffer);
 
