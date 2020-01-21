@@ -4,13 +4,33 @@
 # You can find all of the binaries inside their respective folders, for example, "dmg" will be located
 # in the dmg folder. The "ipsw" binary will be located in ipsw-patch and etc. 
 
+if [ -e yeet ]; then
+	cd yeet
+else
+	mkdir -p yeet
+	cd yeet
+fi
+
+if brew ls --versions cmake > /dev/null; then
+  # cmake is installed
+	:
+else
+  	brew install cmake
+fi
+
+if brew ls --versions libpng > /dev/null; then
+  # libpng is installed
+	:
+else
+  	brew install libpng
+fi
 
 if [ -e /usr/local/opt/openssl ]; then
-	cmake -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl -DOPENSSL_LIBRARIES=/usr/local/opt/openssl .
+	cmake -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl -DOPENSSL_LIBRARIES=/usr/local/opt/openssl ..
 else
 	echo -e "OpenSSL 1.0.2 is required! Installing via brew."
 	brew install https://github.com/tebelorg/Tump/releases/download/v1.0.0/openssl.rb
-	cmake -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl -DOPENSSL_LIBRARIES=/usr/local/opt/openssl .
+	cmake -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl -DOPENSSL_LIBRARIES=/usr/local/opt/openssl ..
 fi
 
 make clean
@@ -41,3 +61,6 @@ if [ ! -e /usr/local/include/xpwn ]; then
 	mkdir -p /usr/local/include/xpwn
 	unzip -d /usr/local/include/xpwn xpwn-modified-headers.zip
 fi
+
+echo -e "The built files/binaries are inside the folder yeet. Please ensure that you do not remove the installed OpenSSL as the binaries need a specific dylib from it to run."
+echo -e "If you wish to compile from scratch again, remove the folder yeet."
