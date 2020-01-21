@@ -5,11 +5,12 @@
 # in the dmg folder. The "ipsw" binary will be located in ipsw-patch and etc. 
 
 
-if [ -e /usr/local/opt/openssl@1.0 ]; then
-	echo -e "Lucky you! You still have the old openssl libraries, like I did before I lost my mind trying to add version checking and such. Building!"
-	cmake -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl@1.0 -DOPENSSL_LIBRARIES=/usr/local/opt/openssl@1.0 .
+if [ -e /usr/local/opt/openssl ]; then
+	cmake -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl -DOPENSSL_LIBRARIES=/usr/local/opt/openssl .
 else
-	echo -e "OpenSSL will be automatically built/installed soon. Having more issues trying to make this work."
+	echo -e "OpenSSL 1.0.2 is required! Installing via brew."
+	brew install https://github.com/tebelorg/Tump/releases/download/v1.0.0/openssl.rb
+	cmake -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl -DOPENSSL_LIBRARIES=/usr/local/opt/openssl .
 fi
 
 make clean
