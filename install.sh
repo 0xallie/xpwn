@@ -1,8 +1,7 @@
 #!/bin/bash
 
-# Just a disclaimer, this can be made better and more logical, but I just have it compile everything.
-# You can find all of the binaries inside their respective folders, for example, "dmg" will be located
-# in the dmg folder. The "ipsw" binary will be located in ipsw-patch and etc. 
+# Thanks to the people behind https://github.com/mozilla/libdmg-hfsplus for fixing the dmg binary!
+# And of course, thanks to planetbeing for making xpwn!
 
 if [ -e yeet ]; then
 	cd yeet
