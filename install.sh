@@ -11,30 +11,25 @@ else
 	cd yeet
 fi
 
-if brew ls --versions cmake > /dev/null; then
+if brew ls cmake > /dev/null; then
   # cmake is installed
 	:
 else
   	brew install cmake
 fi
 
-if brew ls --versions libpng > /dev/null; then
+if brew ls libpng > /dev/null; then
   # libpng is installed
 	:
 else
   	brew install libpng
 fi
 
-if [ -e /usr/local/opt/openssl ]; then
-	cmake -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl -DOPENSSL_LIBRARIES=/usr/local/opt/openssl ..
-else
-	echo -e "OpenSSL 1.0.2 is required! Installing via brew."
-	brew install https://github.com/tebelorg/Tump/releases/download/v1.0.0/openssl.rb
-	cmake -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl -DOPENSSL_LIBRARIES=/usr/local/opt/openssl ..
-fi
+# These commands are being executed inside the folder yeet. Using "make" will only work in that folder.
 
+cmake -DOPENSSL_ROOT_DIR=/usr -DOPENSSL_LIBRARIES=/usr/lib .. # Apple already has given us working OpenSSL libraries, just use them instead...
 make clean
-make all
+make package #(makes all of the important stuff and creates a zip archive)
 
 # If /usr/local/lib/libcommon.a does not exist
 
@@ -62,5 +57,8 @@ if [ ! -e /usr/local/include/xpwn ]; then
 	unzip -d /usr/local/include/xpwn xpwn-modified-headers.zip
 fi
 
-echo -e "The built files/binaries are inside the folder yeet. Please ensure that you do not remove the installed OpenSSL as the binaries need a specific dylib from it to run."
-echo -e "If you wish to compile from scratch again, remove the folder yeet."
+# We are still inside yeet
+mv -v XPwn-0.5.8-Darwin.zip ..
+cd ..
+rm -rf yeet
+echo -e "All of your files are contained in the zip archive XPwn-0.5.8-Darwin.zip. Just unzip it and all of the binaries and firmware bundles will be inside. Have fun!"
