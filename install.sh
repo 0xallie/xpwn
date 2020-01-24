@@ -26,9 +26,18 @@ fi
 
 # These commands are being executed inside the folder yeet. Using "make" will only work in that folder.
 
-cmake -DOPENSSL_ROOT_DIR=/usr -DOPENSSL_LIBRARIES=/usr/lib .. # Apple already has given us working OpenSSL libraries, just use them instead...
+# Not sure if there will ever be more than one version inside /usr/local/Cellar/openssl, but at least check if 1.0.2t exists.
+
+if [ -e /usr/local/Cellar/openssl/1.0.2t ]; then
+	cmake -DOPENSSL_ROOT_DIR=/usr/local/Cellar/openssl/1.0.2t -DOPENSSL_LIBRARIES=/usr/local/Cellar/openssl/1.0.2t/lib ..
+else
+	echo -e "OpenSSL 1.0.2 is required! Installing via brew."
+	brew install https://github.com/tebelorg/Tump/releases/download/v1.0.0/openssl.rb
+	cmake -DOPENSSL_ROOT_DIR=/usr/local/Cellar/openssl/1.0.2t -DOPENSSL_LIBRARIES=/usr/local/Cellar/openssl/1.0.2t/lib ..
+fi
+
 make clean
-make package #(makes all of the important stuff and creates a zip archive)
+make package # (makes all of the important stuff and creates a zip archive)
 
 # If /usr/local/lib/libcommon.a does not exist
 
