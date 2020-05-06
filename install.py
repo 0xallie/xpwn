@@ -94,7 +94,7 @@ def compile():
 	zip = zipfile.ZipFile('../xpwn-modified-headers.zip')
 	zip.extractall(include_path)
 
-	print('Ok, everthing should be done!')
+	print('Ok, everything should be done!')
 
 
 def installOpenSSL():
