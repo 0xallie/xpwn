@@ -39,10 +39,7 @@ def compile():
 
 	# Make sure OpenSSL never says 1.1.1
 	
-	if 'OpenSSL' and 'found version "1.0.2"' in cmake_cmd.stdout:
-		print('Cool, cmake is reporting OpenSSL 1.0.2!')
-	
-	elif 'OpenSSL' and 'found version "1.1.1"' in cmake_cmd.stdout:
+	if 'OpenSSL' and 'found version "1.1.1"' in cmake_cmd.stdout:
 		raise IOError('Oof, some reason we still are using OpenSSL 1.1.1')
 	
 	make_cmd = subprocess.run(
