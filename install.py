@@ -98,6 +98,7 @@ def compile():
 
 
 def installOpenSSL():
+	cwd = os.getcwd()
 	url = 'https://www.openssl.org/source/old/1.0.2/openssl-1.0.2u.tar.gz'
 	filename = urlsplit(url).path.split('/')[-1]
 	path = '/usr/local/ssl'
@@ -137,10 +138,13 @@ def installOpenSSL():
 			subprocess.run(['make'])
 			subprocess.run(['make', 'install'])
 
+	os.chdir(cwd)
+
 
 def main():
 	installOpenSSL()
 	compile()
+
 
 if __name__ == '__main__':
 	main()
