@@ -120,8 +120,9 @@ def installOpenSSL():
 
 	else:
 		# OpenSSL does not exist at /usr/local/ssl
-		print('Downloading OpenSSL 1.0.2u')
-		urlretrieve(url, filename)
+		if not os.path.exists(filename):
+			print('Downloading OpenSSL 1.0.2u')
+			urlretrieve(url, filename)
 
 		if os.path.exists('openssl-1.0.2u'):
 			shutil.rmtree('openssl-1.0.2u')
