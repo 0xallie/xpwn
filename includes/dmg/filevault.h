@@ -79,9 +79,9 @@ typedef struct FileVaultInfo {
 
 	AbstractFile* file;
 
-	HMAC_CTX      hmacCTX;
-	AES_KEY       aesKey;
-	AES_KEY       aesEncKey;
+	HMAC_CTX	*hmacCTX;
+	AES_KEY		aesKey;
+	AES_KEY		aesEncKey;
 
 	off_t         offset;
 
